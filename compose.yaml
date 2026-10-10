@@ -1,7 +1,10 @@
 services:
   provider-fake:
     build: ./provider-fake
-    env_file: .env
+    # Só as chaves que ele valida (as do .env incluem segredos do gateway que não são dele).
+    environment:
+      FAKE_OPENAI_KEY: ${FAKE_OPENAI_KEY}
+      FAKE_ANTHROPIC_KEY: ${FAKE_ANTHROPIC_KEY}
     ports:
       - "8090:8090"
 
@@ -11,13 +14,78 @@ services:
       - "8000:80"
     volumes:
       - ./edge/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    # Sem healthcheck, `up --wait` volta antes de o nginx escutar (curl logo depois: recusado).
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/health"]
+      start_period: 10s
+      start_interval: 1s
+      interval: 30s
+      timeout: 3s
+      retries: 3
     depends_on:
       app:
         condition: service_healthy
 
+  gateway-db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: litellm
+      POSTGRES_PASSWORD: ${GATEWAY_DB_PASSWORD:?defina no .env (cp .env.example .env)}
+      POSTGRES_DB: litellm
+    # Volume nomeado: chaves e gasto acumulado (orçamento) sobrevivem a `down`/`up`;
+    # `docker compose down -v` zera tudo (as chaves são recriadas no próximo `up`).
+    volumes:
+      - gateway-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U litellm -d litellm"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  gateway:
+    image: ghcr.io/berriai/litellm:v1.102.1
+    init: true
+    entrypoint: ["/bin/bash", "/config/entrypoint.sh"]
+    command: ["--config", "/config/config.yaml", "--port", "4000"]
+    ports:
+      - "4000:4000"
+    volumes:
+      # Diretório, não arquivo: edições que trocam o inode do config.yaml continuam
+      # visíveis após `docker compose restart gateway`.
+      - ./gateway:/config:ro
+    environment:
+      DATABASE_URL: postgresql://litellm:${GATEWAY_DB_PASSWORD}@gateway-db:5432/litellm
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:?defina no .env (cp .env.example .env)}
+      GATEWAY_APP_KEY: ${GATEWAY_APP_KEY:?defina no .env (cp .env.example .env)}
+      FAKE_OPENAI_KEY: ${FAKE_OPENAI_KEY}
+      FAKE_ANTHROPIC_KEY: ${FAKE_ANTHROPIC_KEY}
+      # Offline: sem o 1º, o LiteLLM busca no GitHub o mapa de custos ao subir (3 tentativas);
+      # o 2º evita a busca da lista de betas da Anthropic quando chega header anthropic-beta.
+      LITELLM_LOCAL_MODEL_COST_MAP: "True"
+      LITELLM_LOCAL_ANTHROPIC_BETA_HEADERS: "True"
+    healthcheck:
+      # Pronto = LiteLLM respondendo E chaves provisionadas. Nunca usar /health aqui:
+      # ele chama todos os modelos (polui /admin/calls e gasta).
+      test: ["CMD", "python3", "-c", "import os, urllib.request; urllib.request.urlopen('http://127.0.0.1:4000/health/readiness', timeout=2); os.stat('/tmp/keys.ok')"]
+      interval: 3s
+      timeout: 3s
+      retries: 60
+      start_period: 20s
+    depends_on:
+      gateway-db:
+        condition: service_healthy
+      provider-fake:
+        condition: service_healthy
+
   app:
     build: ./app
-    env_file: .env
+    # Sem env_file: a app só recebe o que usa. As chaves dos providers ainda estão aqui
+    # porque F2–F4 chamam os providers direto (llm.py) até o fim da refatoração.
+    environment:
+      GATEWAY_BASE_URL: http://gateway:4000/v1
+      GATEWAY_API_KEY: ${GATEWAY_APP_KEY}
+      FAKE_OPENAI_KEY: ${FAKE_OPENAI_KEY}
+      FAKE_ANTHROPIC_KEY: ${FAKE_ANTHROPIC_KEY}
     volumes:
       - ./data:/data:ro
     healthcheck:
@@ -28,3 +96,8 @@ services:
     depends_on:
       provider-fake:
         condition: service_healthy
+      gateway:
+        condition: service_healthy
+
+volumes:
+  gateway-db-data:

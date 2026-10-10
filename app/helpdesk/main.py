@@ -1,8 +1,18 @@
 from fastapi import FastAPI
 
-from . import classification, extraction, report, suggestion
+from . import classification, config, extraction, report, suggestion
+from .adapters.gateway import GatewayLanguageModel
 from .schemas import (Classification, OrderData, PeriodInput, ReplySuggestion, TicketInput,
                       TopicsReport)
+
+# Ponto de composição: único lugar que lê a configuração e conhece o adapter concreto do
+# gateway; as features recebem o modelo pelo port (ports.LanguageModel).
+language_model = GatewayLanguageModel(
+    base_url=config.GATEWAY_BASE_URL,
+    api_key=config.GATEWAY_API_KEY,
+    timeout=config.GATEWAY_TIMEOUT_SECONDS,
+    max_tokens=config.MAX_OUTPUT_TOKENS,
+)
 
 app = FastAPI(title="Helpdesk")
 
@@ -13,8 +23,8 @@ def health():
 
 
 @app.post("/tickets/classification")
-def classify_ticket(ticket: TicketInput) -> Classification:
-    return classification.classify(ticket)
+async def classify_ticket(ticket: TicketInput) -> Classification:
+    return await classification.classify(ticket, language_model)
 
 
 @app.post("/tickets/reply-suggestion")

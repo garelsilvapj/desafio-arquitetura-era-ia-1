@@ -1,0 +1,57 @@
+# AI Gateway (LiteLLM Proxy v1.102.1).
+#
+# A app só conhece os nomes lógicos (model_name) das 4 capacidades. Modelo físico,
+# provider, chave do provider e preço de cada capacidade moram aqui.
+# Trocar o modelo de uma capacidade: editar o `model` (e os preços) do deployment e
+# `docker compose restart gateway`; a app não muda nem reinicia.
+#
+# Preços em US$ por token, escritos em DECIMAL (não use notação científica como 3e-6:
+# o PyYAML lê isso como string e o custo vira zero). Tabela do provider-fake:
+#   gpt-fake-large    2,50 / 10,00 por 1M (entrada / saída)
+#   gpt-fake-mini     0,15 /  0,60
+#   claude-fake-large 3,00 / 15,00
+#   claude-fake-mini  0,80 /  4,00
+
+model_list:
+  # ---- classify (F1, classificação) ----------------------------------------
+  - model_name: classify
+    litellm_params:
+      model: openai/gpt-fake-large
+      api_base: http://provider-fake:8090/openai/v1
+      api_key: os.environ/FAKE_OPENAI_KEY
+      input_cost_per_token: 0.0000025
+      output_cost_per_token: 0.00001
+
+  # ---- suggest (F2, sugestão de resposta) ----------------------------------
+  - model_name: suggest
+    litellm_params:
+      model: anthropic/claude-fake-large
+      api_base: http://provider-fake:8090/anthropic
+      api_key: os.environ/FAKE_ANTHROPIC_KEY
+      input_cost_per_token: 0.000003
+      output_cost_per_token: 0.000015
+
+  # ---- topics (F3, relatório de tópicos) -----------------------------------
+  - model_name: topics
+    litellm_params:
+      model: anthropic/claude-fake-large
+      api_base: http://provider-fake:8090/anthropic
+      api_key: os.environ/FAKE_ANTHROPIC_KEY
+      input_cost_per_token: 0.000003
+      output_cost_per_token: 0.000015
+
+  # ---- extract (F4, extração de pedido) ------------------------------------
+  - model_name: extract
+    litellm_params:
+      model: openai/gpt-fake-large
+      api_base: http://provider-fake:8090/openai/v1
+      api_key: os.environ/FAKE_OPENAI_KEY
+      input_cost_per_token: 0.0000025
+      output_cost_per_token: 0.00001
+
+# Resiliência (timeouts, retry_policy, fallbacks técnico e com modelo fraco) entra
+# nas fases seguintes, aqui e em router_settings. Por ora: sem fallback.
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+  database_url: os.environ/DATABASE_URL
