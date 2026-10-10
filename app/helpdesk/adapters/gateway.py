@@ -20,7 +20,7 @@ class GatewayLanguageModel(LanguageModel):
         response = await self._client.chat.completions.create(
             model=capability,
             messages=[{"role": "user", "content": f"TASK: {task}\n{content}"}],
-            # Sempre explícito: sem ele o LiteLLM manda 4096 para a Anthropic.
+            # Sempre explícito: sem ele o LiteLLM aplica um padrão próprio por provider (ex.: 4096).
             max_tokens=self._max_tokens,
         )
         return response.choices[0].message.content

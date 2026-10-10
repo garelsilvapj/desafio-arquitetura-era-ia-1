@@ -20,6 +20,8 @@ cp .env.example .env && docker compose up -d --build --wait
 curl -s localhost:8000/health   # {"status":"ok"}
 ```
 
+Serviços: `edge` (nginx, `:8000`, a borda), `app` (o helpdesk), `gateway` (AI Gateway LiteLLM, `:4000`), `gateway-db` (Postgres do gateway: chaves virtuais e gasto) e `provider-fake` (`:8090`). A app fala só com o gateway, usando os nomes lógicos das capacidades (`classify`, `suggest`, `topics`, `extract`) e a chave virtual `GATEWAY_APP_KEY`. Modelo físico, provider e chaves dos providers ficam em `gateway/config.yaml` e no ambiente do serviço `gateway`.
+
 ### Testes de caracterização
 
 ```bash
@@ -31,6 +33,22 @@ Fixam o comportamento externo da v1 pela borda (corpos completos, não só statu
 - Variáveis: `BASE_URL` (padrão `http://localhost:8000`) e `PROVIDER_URL` (padrão `http://localhost:8090`).
 - Duração: cerca de 1 minuto (as sugestões levam ~16 s cada).
 - Requer `python3` >= 3.11 no host; o script cria `.venv/` e instala `tests/requirements.txt` sozinho. Argumentos extras vão para o pytest (`./tests/run.sh characterization -k health`).
+
+### Métrica de acoplamento
+
+```bash
+python3 metrics/coupling.py <path>/app/helpdesk --name <nome>   # ex.: python3 metrics/coupling.py app/helpdesk --name v2-decoupled
+```
+
+Calcula Ca, Ce, I, A e D por módulo de `app/helpdesk/` e lista a zona de dor (A < 0,5, I < 0,5, D ≥ 0,5). Grava `metrics/results/<nome>.csv` e `.svg` (`--out-dir` muda a pasta). Só biblioteca padrão; não importa nem executa a app.
+
+Para medir uma tag com a régua atual, sem mexer na cópia de trabalho:
+
+```bash
+git worktree add /tmp/medir-v1 v1-coupled
+python3 metrics/coupling.py /tmp/medir-v1/app/helpdesk --name v1-coupled --out-dir /tmp/medicao
+git worktree remove /tmp/medir-v1
+```
 
 ## Diagnóstico da v1
 

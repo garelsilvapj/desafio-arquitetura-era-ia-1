@@ -145,6 +145,136 @@ Mudança: em `ports.py`, o número de classes de exceção não passa do número
 
 Sem mudança: alvos, estratégias e sequência continuam os do plano. A projeção do estado final (port com `LanguageModel` e `TicketSource`, dois adapters importados só por `main`, features dependendo de `ports` + `schemas`), medida como esqueleto, deixa na zona de dor só `config` (Ca = 1) e `schemas` (Ca = 5), as duas exceções previstas. Fica espaço para revisões encontradas na refatoração em escala.
 
+Achados da refatoração em escala (2026-10-09: F4, F2 e F3 no port, `tickets` → adapter, limpeza de `config`). Tokens contados pela regra do provider-fake (`ceil(caracteres / 4)`), que reproduz os 222.114 tokens de entrada do mês medidos no diagnóstico (34 lotes × 6.533).
+
+**R8. Tamanho do lote: constante do `report`, e não item de `config`.** O plano deixava o tamanho do lote em `config`, entre "o que varia por ambiente". Medido, ele não varia por ambiente nem muda a resposta: é o quanto cabe no contexto do modelo que atende `topics` (8.000 tokens nos quatro modelos do provider-fake).
+
+| Tickets por chamada | Lotes no mês de agosto | Entrada por lote, média / máx. (tokens) | Lotes acima de 8.000 | Relatório de 2026-08-01 (137 tickets, direto no provider) |
+|---|---|---|---|---|
+| 50 | 100 | 2.223 / 2.263 | 0 | 3 chamadas, igual ao golden |
+| 100 | 50 | 4.443 / 4.496 | 0 | 2 chamadas, igual ao golden |
+| **150** (v1) | 34 | 6.533 / 6.729 | 0 | 1 chamada, igual ao golden |
+| 180 | 28 | 7.932 / 8.068 | **13** | — |
+| 200 | 25 | 8.884 / 8.959 | **25** | — |
+
+Decisão: `report.TICKETS_PER_CALL = 150`, ao lado de `report.CAPABILITY`, pelo mesmo motivo da R4: é parte do contrato lógico app ↔ gateway, não do ambiente. O outro lado do contrato fica escrito onde o modelo é trocado (`gateway/config.yaml`, comentário em `topics`: o modelo precisa de contexto ≥ 8.000 tokens). Injetar por `main` não mudaria a métrica (um `int` não é componente), mas criaria um parâmetro de ambiente para um valor que só muda junto com o modelo de `topics`. O lote segue sequencial; a fase de concorrência pode reduzi-lo (mais lotes, mesmo resultado, como mostra a tabela).
+
+**R9. `TicketSource` também é assíncrono.** O plano não fixava a forma do segundo port. Com a rota da F3 virando `async def` (R5a), uma leitura síncrona do arquivo rodaria no event loop. Medido dentro do container `app` (20 leituras de `/data/tickets.jsonl`, 5.000 linhas): mediana 11,3 ms (um dia), 8,5 ms (mês) e 7,9 ms (período vazio), máximo 20,4 ms, tempo em que as F1, F2 e F4 em andamento ficariam paradas. Decisão: `async def in_period(start, end) -> list[dict]`, e `FileTicketSource` lê o arquivo em `asyncio.to_thread`. Sem custo na métrica: `ports` segue com A = 1 (dois `Protocol`s, nenhuma exceção, dentro do limite da R2).
+
+**R10. Em falha: mesmo status e corpo, outro tempo; e o timeout do cliente muda o modo de falha da F2.** Provider em `error_500`, uma requisição por feature pela borda, antes (piloto: F2–F4 direto pelo SDK) e depois (v2: tudo pelo gateway):
+
+| Feature (provider em falha) | Piloto | v2 | Tentativas em `/admin/calls` |
+|---|---|---|---|
+| F1 classify (openai) | 500 em 4,45 s | 500 em 4,11 s | 3 → 3 |
+| F4 extract (openai) | 500 em 1,34 s | 500 em 5,23 s | 3 → 3 |
+| F2 suggest (anthropic) | 500 em 1,45 s | 500 em 5,24 s | 3 → 3 |
+| F3 topics, um dia (anthropic) | 500 em 1,39 s | 500 em 3,79 s | 3 → 3 |
+
+Corpo `Internal Server Error` nos dois estados, e as features do outro provider seguem 200. É a R6 valendo para as quatro capacidades: as 2 retentativas saíram do SDK (agora com `max_retries=0`) e foram para o roteador do LiteLLM, com espera maior entre elas. Em operação normal o gateway não pesa (pela borda, antes → depois): extração 1,09 s → 1,09 s, sugestão 16,14 s → 16,15 s, relatório de um dia 9,84 s → 9,83 s.
+
+Com a Anthropic em `timeout`, a F2 responde **500 aos 25,0 s** (`openai.APITimeoutError`, a rede de segurança `config.GATEWAY_TIMEOUT_SECONDS`), onde a v1 dava 504 da borda aos 30 s. A chamada segue aberta no provider depois que a app desistiu (`/admin/calls` ~35 s após o início: `suggest`, `status=504`, `duration_ms=null`): o gateway não cancela. A F2 normal leva 16,1 s, então sobram 8,9 s até a rede de segurança, e no modo `slow` (×10) ela falharia sempre. A suíte não cobre falhas e esta fase não muda política (R6), então nada disso foi corrigido aqui. Fica como entrada da fase de resiliência: timeout por capacidade no gateway (e streaming na F2), `num_retries` explícito e verificar se a chamada ao provider é cancelada quando a app desiste.
+
+## Resultado da refatoração (v2-decoupled)
+
+Estado final de `app/helpdesk/` (2026-10-09):
+
+- `ports.py`: `LanguageModel` e `TicketSource`, dois `typing.Protocol` assíncronos (R9).
+- `adapters/gateway.py` (`GatewayLanguageModel(LanguageModel)`) e `adapters/tickets_file.py` (`FileTicketSource(TicketSource)`, o antigo `tickets.py`): herança nominal do port (R1), configuração pelo construtor, importados só por `main`.
+- Features `classification`, `extraction`, `suggestion` e `report`: rotas `async`, recebem o `LanguageModel` (e o `report`, o `TicketSource`) de `main` e declaram a capacidade lógica (`classify`, `extract`, `suggest`, `topics`, R4). Importam só `ports`, `schemas`, `fastapi`, `json` e `re`. O `report` continua sequencial e síncrono por contrato: um lote de 150 depois do outro, na mesma requisição (R8).
+- `config.py`: URL e chave virtual do gateway (do ambiente), timeout do cliente, `MAX_OUTPUT_TOKENS` e caminho do arquivo de tickets. Lido só por `main`; sem chave, URL nem nome físico de provider.
+- `llm.py` removido; `anthropic` fora de `app/requirements.txt` (o `openai` fica, usado só por `adapters/gateway.py`).
+- Compose: o `app` recebe só `GATEWAY_BASE_URL` e `GATEWAY_API_KEY` e depende só do `gateway`. Saiu também o `depends_on` do `provider-fake`, com quem a app não fala mais.
+
+### Métrica v1 → v2
+
+`python3 metrics/coupling.py app/helpdesk --name v2-decoupled` → `metrics/results/v2-decoupled.csv` e `.svg` (medição oficial da v2). A v1 remedida a partir da tag (`git worktree add`) reproduz `metrics/results/v1-coupled.csv` byte a byte.
+
+| Componente | v1: Ca / Ce / I / A / D | v2: Ca / Ce / I / A / D | Zona de dor v1 → v2 |
+|---|---|---|---|
+| `adapters.gateway` | — | 1 / 1 / 0,50 / 0,00 / 0,50 | — → não (fronteira I = 0,5, R1) |
+| `adapters.tickets_file` (era `tickets`) | 1 / 1 / 0,50 / 0,00 / 0,50 | 1 / 1 / 0,50 / 0,00 / 0,50 | não → não (fronteira I = 0,5) |
+| `classification` | 1 / 3 / 0,75 / 0,00 / 0,25 | 1 / 2 / 0,67 / 0,00 / 0,33 | não → não |
+| `config` | 6 / 0 / 0,00 / 0,00 / **1,00** | 1 / 0 / 0,00 / 0,00 / **1,00** | sim → sim (estável por natureza) |
+| `extraction` | 1 / 3 / 0,75 / 0,00 / 0,25 | 1 / 2 / 0,67 / 0,00 / 0,33 | não → não |
+| `llm` | 4 / 1 / 0,20 / 0,00 / **0,80** | removido | sim → — |
+| `main` | 0 / 5 / 1,00 / 0,00 / 0,00 | 0 / 8 / 1,00 / 0,00 / 0,00 | não → não |
+| `ports` | — | 6 / 0 / 0,00 / **1,00** / 0,00 | — → não |
+| `report` | 1 / 4 / 0,80 / 0,00 / 0,20 | 1 / 2 / 0,67 / 0,00 / 0,33 | não → não |
+| `schemas` | 5 / 0 / 0,00 / 0,00 / **1,00** | 5 / 0 / 0,00 / 0,00 / **1,00** | sim → sim (estável por natureza) |
+| `suggestion` | 1 / 3 / 0,75 / 0,00 / 0,25 | 1 / 2 / 0,67 / 0,00 / 0,33 | não → não |
+
+**Zona de dor**: v1 = {`config`, `llm`, `schemas`}; piloto = {`config`, `llm`, `schemas`}; v2 = {`config`, `schemas`}, exatamente a projeção do esqueleto e as duas exceções previstas no plano.
+
+Leitura:
+
+- `llm` deixou de existir. O acoplamento com os providers mora num único componente, `adapters.gateway`, com Ca = 1, e os SDKs dos providers saíram da app.
+- `config` segue com D = 1, mas o Ca caiu de 6 para 1: só o ponto de composição o lê, e o conteúdo deixou de ser segredo de provider e nome físico de modelo.
+- `ports` é o componente mais usado (Ca = 6) e o único abstrato (A = 1, D = 0): as dependências das features e dos adapters convergem para uma abstração estável, na Main Sequence.
+- As quatro features ficaram iguais (Ca 1, Ce 2 = {`ports`, `schemas`}, D = 0,33). O D subiu de 0,20–0,25 para 0,33, como previsto na R3: não é meta.
+- A métrica não mostra a direção das dependências, então ela foi contada com o mesmo parser do `coupling.py`. Arestas de feature para módulo concreto e volátil (`config`, `llm`, `tickets`, `adapters.*`): v1 = 9, piloto = 7, v2 = **0**. Arestas para `ports`: 0 → 2 → 6. Importadores de `config`: 6 → 6 → 1 (`main`).
+
+### Critério de pronto
+
+| # | Critério | Evidência (comando → resultado) | |
+|---|---|---|---|
+| 1 | Suíte inalterada e verde | `git diff --stat v1-coupled -- tests/characterization/` → vazio; `./tests/run.sh characterization` → `20 passed in 52.07s`; repetida no estado final, depois de um novo `docker compose up -d --build --wait`: `20 passed in 51.98s` | ok |
+| 2 | Zona de dor só com os estáveis por natureza; adapter e features fora | `python3 metrics/coupling.py app/helpdesk --name v2-decoupled` → `Zona de dor (A<0.5, I<0.5, D>=0.5): config, schemas`; `adapters.gateway` I = 0,50, features D = 0,33 | ok: `config` e `schemas` declarados estáveis por natureza, com justificativa, no [ADR 0010](adr/0010-leitura-da-metrica-de-acoplamento.md) (escrito antes da tag, por exigência do orquestrador) |
+| 2b | Ca = 1 para cada `adapters.*` (R1) | `metrics/results/v2-decoupled.csv` → `adapters.gateway,1,1,…` e `adapters.tickets_file,1,1,…` | ok |
+| 3 | Chamada ao gateway num só componente, importado só por `main`; sem `llm`; nenhuma feature importa `adapters.*`/`config`/`llm` | `grep -rln openai app/helpdesk` → só `adapters/gateway.py`; `grep -rnE "^\s*(from\|import) .*(adapters\|config)" app/helpdesk` → só `main.py` (3 linhas); `grep -nE "^\s*(from\|import) " app/helpdesk/{classification,extraction,suggestion,report}.py` → só `.ports`, `.schemas`, `fastapi`, `json`, `re`; `app/helpdesk/llm.py` não existe | ok |
+| 4 | Nenhum nome físico nem chave de provider em `app/`; sem SDK `anthropic` | `grep -rE "gpt-fake\|claude-fake\|FAKE_\|sk-fake\|sk-ant-fake\|anthropic" app/` → vazio (exit 1); na imagem, `importlib.util.find_spec('anthropic')` → `None` (o `openai` continua instalado) | ok |
+| 5 | O `app` não recebe as chaves dos providers | `docker compose exec app env \| grep -iE "fake\|anthropic\|openai_api"` → vazio; variáveis do container: `GATEWAY_API_KEY`, `GATEWAY_BASE_URL` e as da imagem `python` (`GPG_KEY`, `HOME`, `HOSTNAME`, `LANG`, `PATH`, `PYTHON_SHA256`, `PYTHON_VERSION`); `docker compose config app` → `environment` só com as duas, sem `env_file`, único volume `./data:/data:ro` | ok |
+
+Evidência complementar:
+
+- **As 4 capacidades passam pelo gateway.** Depois da suíte, `/admin/calls`: `classify` 6 e `extract` 3 em `openai/gpt-fake-large`, `suggest` 2 e `topics` 1 em `anthropic/claude-fake-large`, todas `200`. No gateway, as 12 últimas linhas de `/spend/logs` têm `model_group` `classify` 6 e `extract` 3 → `openai/gpt-fake-large`, `suggest` 2 e `topics` 1 → `anthropic/claude-fake-large` (US$ 0,0438 no total), e o log de acesso tem 12 `POST /v1/chat/completions` vindos do IP do `app`.
+- **A app não envia política.** `grep -rnE "num_retries|x-litellm|extra_headers|extra_body" app/helpdesk` só acha a docstring do adapter. O cliente usa `max_retries=0` e o `timeout` do construtor do SDK, que é local e não vai para o gateway.
+- **Regras de validação preservadas.** Com um `LanguageModel` falso injetado (dentro do container): classificação fora dos valores → `502 'Classificação fora dos valores permitidos'`; pedido `"123"` → `502 'Número de pedido em formato inválido'`; `start > end` → `422 'A data inicial é posterior à data final'`; 301 tickets → 3 chamadas `topics` em sequência. A suíte cobre os 422 pela borda.
+- **Falhas e latência**: ver R10. O relatório mensal continua estourando os 30 s da borda (Dor 1), pois sequencial e síncrono são o contrato desta tag; concorrência e request-reply assíncrono são a próxima fase.
+
 ## Handoff para o agente de IA
 
-_(preenchido pelo orquestrador após a refatoração em escala)_
+**Quem fez o quê.** A refatoração foi feita pelo Claude Code em dois papéis. Uma sessão orquestradora (Claude Opus 5.5) decidiu a arquitetura, escreveu os briefs e julgou as entregas. Ela não escreveu código de produção. A execução ficou com subagentes `general-purpose` do Claude Code, cada um numa sessão nova, sem o histórico das fases anteriores: Opus 5.5 no piloto (Fase 4a) e na escala (Fase 4b), Sonnet 5.5 no script de métrica e na suíte de caracterização. Os agentes não podiam fazer commit nem tag. Só o orquestrador fazia, e só depois dos juízes.
+
+**O que foi entregue ao agente da escala (Fase 4b)**
+
+1. Este documento como especificação: plano original, piloto e revisões R1–R7, com o estado de partida no commit `0874670` (F1 já pelo gateway, F2–F4 ainda via `llm.py`).
+2. Escopo:
+   - migrar F4, F2 e F3 para `ports.LanguageModel`;
+   - transformar `tickets` em `adapters/tickets_file.py` com `ports.TicketSource`;
+   - tirar de `config` chaves, URLs de provider e nomes físicos;
+   - remover `llm.py` e o SDK `anthropic`;
+   - tirar `FAKE_*` do serviço `app`;
+   - manter o comportamento externo: rotas e respostas síncronas, F3 sequencial.
+3. Proibições:
+   - não tocar `tests/characterization/`, `metrics/coupling.py`, `provider-fake/`, `edge/` e `data/`;
+   - não mudar o comportamento externo;
+   - não enviar política do gateway pela app (`timeout`, `num_retries`, `x-litellm-*`);
+   - não fazer commit.
+4. Os juízes, todos determinísticos e com o resultado esperado declarado antes:
+   - `./tests/run.sh characterization` → 20 passed, com `git diff v1-coupled -- tests/characterization/` vazio;
+   - `python3 metrics/coupling.py app/helpdesk --name v2-decoupled` → zona de dor só com {`config`, `schemas`};
+   - o grep de nomes físicos e chaves;
+   - imports das features só para `ports` e `schemas`;
+   - `adapters.*` com Ca = 1;
+   - ambiente do `app` sem chaves de provider.
+
+**Por que o agente não podia "passar no juiz" trapaceando**
+
+- A suíte e o script de métrica estavam congelados por `git diff` contra a tag e contra o commit do script.
+- A tabela da v1 foi calculada à mão pelo orquestrador antes de existir o script, e o script só foi aceito quando reproduziu essa tabela por `diff`.
+- O orquestrador não confiou no relatório do agente: re-executou cada juiz no próprio terminal antes de aceitar.
+
+**Como os juízes aceitaram ou rejeitaram o que o agente produziu**
+
+| Entrega | Juízes re-executados pelo orquestrador | Decisão |
+|---|---|---|
+| Script de métrica (Sonnet) | `pytest -q metrics/tests` → 8 passed; `diff` do CSV com a tabela à mão → idêntico | Aceito. O gráfico foi **rejeitado** na revisão visual (rótulos sobrepostos, legenda da zona sobre `config`) e devolvido para correção. O CSV não podia mudar: `diff` vazio de novo |
+| Piloto (Opus) | `git diff` da suíte vazio; caracterização 20 passed (51,94 s); métrica recalculada, com zona de dor {config, llm, schemas} igual à relatada; leitura do código (adapter único, port `Protocol`, feature sem `config`/`llm`) | Aceito com uma ressalva: a herança nominal do port (R1a) só fica se for justificada por desenho, não pela fórmula. Isso virou exigência do ADR da métrica |
+| Escala (Opus) | `git diff` da suíte e do script vazios; caracterização 20 passed (52,01 s); métrica com zona de dor {config, schemas} e CSV versionado igual ao recalculado; grep vazio; só `main` importa `config`/`adapters`; `docker compose exec app env` só com `GATEWAY_*`; `docker compose config app` sem `env_file` | Aceito. O próprio agente marcou o critério 2 como pendente (faltava o ADR que declara as exceções). O orquestrador **segurou a tag** `v2-decoupled` até o ADR 0010 existir |
+
+**O que o agente decidiu sozinho e foi aceito porque veio com medição**
+
+- R8: tamanho do lote como constante do `report`. Medição: tokens por lote contra a janela de 8k.
+- R9: `TicketSource` assíncrono. Medição: tempo de leitura do arquivo no event loop.
+
+O agente também apontou que, em falha, a v2 responde mais devagar e de outro jeito (R10). Isso não foi "consertado" na v2, de propósito: virou entrada da fase de resiliência, porque a tag v2 não podia mudar comportamento.

@@ -79,13 +79,11 @@ services:
 
   app:
     build: ./app
-    # Sem env_file: a app só recebe o que usa. As chaves dos providers ainda estão aqui
-    # porque F2–F4 chamam os providers direto (llm.py) até o fim da refatoração.
+    # Sem env_file: a app só recebe o que usa, a URL do gateway e a sua chave virtual.
+    # Chaves, URLs e modelos dos providers ficam no gateway; a app não fala com os providers.
     environment:
       GATEWAY_BASE_URL: http://gateway:4000/v1
       GATEWAY_API_KEY: ${GATEWAY_APP_KEY}
-      FAKE_OPENAI_KEY: ${FAKE_OPENAI_KEY}
-      FAKE_ANTHROPIC_KEY: ${FAKE_ANTHROPIC_KEY}
     volumes:
       - ./data:/data:ro
     healthcheck:
@@ -94,8 +92,6 @@ services:
       timeout: 3s
       retries: 20
     depends_on:
-      provider-fake:
-        condition: service_healthy
       gateway:
         condition: service_healthy
 

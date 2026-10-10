@@ -32,6 +32,8 @@ model_list:
       output_cost_per_token: 0.000015
 
   # ---- topics (F3, relatório de tópicos) -----------------------------------
+  # A app manda lotes de 150 tickets (~6,5k tokens de entrada, máx. 6.729 em agosto):
+  # o modelo daqui precisa de contexto >= 8.000 tokens.
   - model_name: topics
     litellm_params:
       model: anthropic/claude-fake-large
