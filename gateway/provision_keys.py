@@ -7,6 +7,7 @@ aceita chaves declaradas no config.yaml, então elas são criadas pela API de ad
       mesmo hash       -> POST /key/update   (mantém o gasto acumulado)
       ausente          -> POST /key/generate (valor fixo escolhido por nós, vindo do ambiente)
       alias com outra  -> POST /key/delete + /key/generate (o valor mudou no .env)
+    -> confere se todo model_name do config.yaml virou deployment (GET /v1/models)
     -> cria /tmp/keys.ok (o healthcheck do compose exige esse arquivo)
 
 Falhas transitórias (gateway subindo, banco ocupado, 5xx) são repetidas até o prazo.
@@ -14,6 +15,7 @@ Falhas transitórias (gateway subindo, banco ocupado, 5xx) são repetidas até o
 import hashlib
 import json
 import os
+import re
 import sys
 import time
 import urllib.error
@@ -24,16 +26,46 @@ from urllib.parse import quote
 BASE_URL = "http://127.0.0.1:4000"
 MASTER_KEY = os.environ["LITELLM_MASTER_KEY"]
 MARKER = Path("/tmp/keys.ok")
+CONFIG = Path(__file__).with_name("config.yaml")
 DEADLINE_SECONDS = 180
 
 # As chaves são dados: para criar outra chave (ou dar orçamento/limite a uma existente),
 # acrescente um item ou campos aceitos por /key/generate (max_budget, budget_duration,
 # rpm_limit, ...). "key" é o valor que o cliente usa; "key_alias" identifica a chave.
+# Orçamento e limite são checados pelo gateway ANTES de chamar o provider: a recusa é um
+# 429 do próprio gateway e não chega ao provider (nem aparece em /admin/calls).
 KEYS = [
     {
+        # A app: só as 4 capacidades (os grupos internos <cap>-fallback/-weak ficam fora;
+        # o fallback interno os usa mesmo assim). Teto mensal de US$ 80,00 = ~1,5x o gasto
+        # estimado do mês (~US$ 52: 5.000 tickets em F1+F2+F4 e 4 relatórios F3), para
+        # absorver retentativas, fallbacks e crescimento. Sem rpm: a F3 dispara 34 lotes
+        # de uma vez (concorrência 4) e um rpm baixo derrubaria o relatório.
         "key_alias": "helpdesk-app",
         "key": os.environ["GATEWAY_APP_KEY"],
         "models": ["classify", "suggest", "topics", "extract"],
+        "max_budget": 80.0,
+        "budget_duration": "30d",
+    },
+    {
+        # Demonstração de orçamento (scripts/governance-demo.sh). O gateway recusa quando o
+        # gasto acumulado >= teto, e a 1ª chamada sempre passa (gasto 0). O teto precisa
+        # ser menor que o custo de UMA classify do roteiro em qualquer modelo que a
+        # capacidade possa usar: US$ 0,0001575 no gpt-fake-large (19 tokens de entrada,
+        # 11 de saída) e US$ 0,00000945 no gpt-fake-mini, o mais barato. Com US$ 0,000005,
+        # a 2ª chamada é recusada mesmo com o modelo da classify trocado. O roteiro zera o
+        # gasto antes de começar.
+        "key_alias": "demo-budget",
+        "key": os.environ["GATEWAY_DEMO_BUDGET_KEY"],
+        "models": ["classify"],
+        "max_budget": 0.000005,
+    },
+    {
+        # Demonstração de limite de taxa: 2 requisições por minuto; a 3ª é recusada.
+        "key_alias": "demo-rpm",
+        "key": os.environ["GATEWAY_DEMO_RPM_KEY"],
+        "models": ["classify"],
+        "rpm_limit": 2,
     },
 ]
 
@@ -99,6 +131,25 @@ def upsert(spec: dict) -> str:
     return "criada"
 
 
+def check_deployments() -> list[str]:
+    """Todo model_name do config.yaml precisa ter virado deployment no LiteLLM.
+
+    Na subida, o proxy descarta EM SILÊNCIO um deployment inválido (ex.: erro de digitação
+    no provider de `model:`). A capacidade passa a ser atendida pelo fallback, e o
+    /v1/models da chave da app continua listando o nome (ele devolve a allowlist da chave).
+    Aqui a falta vira erro: sem /tmp/keys.ok o gateway não fica healthy.
+    """
+    declared = sorted({name.strip("'\"") for name in re.findall(r"^\s*-\s*model_name:\s*(\S+)", CONFIG.read_text(), re.M)})
+    loaded = {model["id"] for model in call("GET", "/v1/models").get("data", [])}
+    missing = [name for name in declared if name not in loaded]
+    if missing:
+        raise RuntimeError(
+            f"deployment(s) do {CONFIG.name} descartado(s) pelo LiteLLM na subida: {missing}; "
+            "procure 'Error creating deployment' neste log"
+        )
+    return declared
+
+
 def retry(step, what: str, deadline: float):
     delay = 1.0
     while True:
@@ -122,6 +173,8 @@ def main() -> int:
         for spec in KEYS:
             result = retry(lambda: upsert(spec), spec["key_alias"], deadline)
             log(f"chave {spec['key_alias']}: {result} (models={spec.get('models')})")
+        deployments = retry(check_deployments, "deployments", deadline)
+        log(f"{len(deployments)} deployment(s) do {CONFIG.name} carregado(s): {', '.join(deployments)}")
     except Exception as err:  # noqa: BLE001 - qualquer falha deixa o container unhealthy
         log(f"ERRO: {err}; /tmp/keys.ok não foi criado (healthcheck vai falhar)")
         return 1

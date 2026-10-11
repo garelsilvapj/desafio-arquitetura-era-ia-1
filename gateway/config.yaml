@@ -1,19 +1,45 @@
 # AI Gateway (LiteLLM Proxy v1.102.1).
 #
-# A app só conhece os nomes lógicos (model_name) das 4 capacidades. Modelo físico,
-# provider, chave do provider e preço de cada capacidade moram aqui.
-# Trocar o modelo de uma capacidade: editar o `model` (e os preços) do deployment e
-# `docker compose restart gateway`; a app não muda nem reinicia.
+# A app só conhece os nomes lógicos (model_name) das 4 capacidades: classify, suggest,
+# topics e extract. Modelo físico, provider, chave do provider, preço, timeout, retry e
+# fallback de cada capacidade moram aqui.
+#
+# TROCAR O MODELO DE UMA CAPACIDADE: editar a linha `model:` (e as duas de preço) do
+# deployment dela e rodar `docker compose restart gateway`; a app não muda nem reinicia.
+# Cada deployment está escrito por extenso (sem âncoras/merge do YAML) para que a troca
+# seja uma edição local, sem efeito colateral em outro deployment. Depois de trocar,
+# esperar o gateway ficar healthy: o proxy DESCARTA em silêncio um deployment inválido
+# (ignore_invalid_deployments) e a capacidade passaria a ser atendida pelo fallback; por
+# isso o provision_keys.py confere se todo model_name daqui virou deployment e, se
+# faltar algum, o gateway não fica healthy (a causa sai no log). Modelo físico de cada
+# grupo: GET /model/info com a master key (o /v1/models da chave da app só repete a
+# allowlist dela, mesmo com o deployment descartado).
 #
 # Preços em US$ por token, escritos em DECIMAL (não use notação científica como 3e-6:
-# o PyYAML lê isso como string e o custo vira zero). Tabela do provider-fake:
-#   gpt-fake-large    2,50 / 10,00 por 1M (entrada / saída)
-#   gpt-fake-mini     0,15 /  0,60
-#   claude-fake-large 3,00 / 15,00
-#   claude-fake-mini  0,80 /  4,00
+# o PyYAML lê isso como string e o custo vira zero, e nenhum orçamento estoura).
+# Tabela do provider-fake, US$ por 1M tokens (entrada / saída):
+#   gpt-fake-large    2,50 / 10,00   -> 0.0000025  / 0.00001
+#   gpt-fake-mini     0,15 /  0,60   -> 0.00000015 / 0.0000006
+#   claude-fake-large 3,00 / 15,00   -> 0.000003   / 0.000015
+#   claude-fake-mini  0,80 /  4,00   -> 0.0000008  / 0.000004
+#
+# Grupos por capacidade (ligados em router_settings.fallbacks, mais abaixo):
+#   <cap>           primário, o único nome que a app chama
+#   <cap>-fallback  fallback técnico: o large equivalente no OUTRO provider (mesma saída)
+#   <cap>-weak      modelo fraco (mini), só onde a saída do mini é aceitável para a feature
+# Os grupos internos não estão na allowlist da chave da app: ela não os chama
+# diretamente, mas o fallback interno os usa (enforce_fallback_model_access desligado).
+#
+# Timeout por deployment (`timeout`, e `stream_timeout` quando há streaming): limita cada
+# espera por bytes do provider (conexão, primeiro byte, intervalo entre trechos), não a
+# duração total. Sem streaming, o provider só manda a resposta no fim, então o timeout
+# precisa cobrir a geração inteira no large; com streaming, cobre o tempo até o primeiro
+# trecho e o intervalo entre trechos.
 
 model_list:
   # ---- classify (F1, classificação) ----------------------------------------
+  # Saída curta (~11 tokens): ~1,1 s no large, ~0,4 s no mini. Timeout 4 s = ~3,5x o
+  # normal; um provider pendurado custa 4 s, e não os 300 s do modo timeout.
   - model_name: classify
     litellm_params:
       model: openai/gpt-fake-large
@@ -21,8 +47,31 @@ model_list:
       api_key: os.environ/FAKE_OPENAI_KEY
       input_cost_per_token: 0.0000025
       output_cost_per_token: 0.00001
+      timeout: 4
+  - model_name: classify-fallback
+    litellm_params:
+      model: anthropic/claude-fake-large
+      api_base: http://provider-fake:8090/anthropic
+      api_key: os.environ/FAKE_ANTHROPIC_KEY
+      input_cost_per_token: 0.000003
+      output_cost_per_token: 0.000015
+      timeout: 4
+  # Modelo fraco ACEITO: o mini classificou igual ao large os 5.000 tickets.
+  - model_name: classify-weak
+    litellm_params:
+      model: openai/gpt-fake-mini
+      api_base: http://provider-fake:8090/openai/v1
+      api_key: os.environ/FAKE_OPENAI_KEY
+      input_cost_per_token: 0.00000015
+      output_cost_per_token: 0.0000006
+      timeout: 4
 
   # ---- suggest (F2, sugestão de resposta) ----------------------------------
+  # Saída longa (~600 tokens): ~16 s no large sem streaming, primeiro trecho em ~0,8 s.
+  # stream_timeout 5 s: com streaming, nenhum trecho pode demorar mais que isso.
+  # timeout 20 s (sem streaming): a F2 ainda é síncrona nesta versão e a resposta inteira
+  # leva ~16 s; com 5 s ela falharia sempre. Quando a F2 passar a streaming, a app usa o
+  # stream_timeout e este valor só vale para chamadas sem streaming.
   - model_name: suggest
     litellm_params:
       model: anthropic/claude-fake-large
@@ -30,10 +79,34 @@ model_list:
       api_key: os.environ/FAKE_ANTHROPIC_KEY
       input_cost_per_token: 0.000003
       output_cost_per_token: 0.000015
+      timeout: 20
+      stream_timeout: 5
+  - model_name: suggest-fallback
+    litellm_params:
+      model: openai/gpt-fake-large
+      api_base: http://provider-fake:8090/openai/v1
+      api_key: os.environ/FAKE_OPENAI_KEY
+      input_cost_per_token: 0.0000025
+      output_cost_per_token: 0.00001
+      timeout: 20
+      stream_timeout: 5
+  # Modelo fraco ACEITO: texto mais curto (~1.000 caracteres contra ~2.400), mas a
+  # sugestão é revisada e editada pelo atendente; uma sugestão pior é melhor que nenhuma.
+  - model_name: suggest-weak
+    litellm_params:
+      model: anthropic/claude-fake-mini
+      api_base: http://provider-fake:8090/anthropic
+      api_key: os.environ/FAKE_ANTHROPIC_KEY
+      input_cost_per_token: 0.0000008
+      output_cost_per_token: 0.000004
+      timeout: 20
+      stream_timeout: 5
 
   # ---- topics (F3, relatório de tópicos) -----------------------------------
   # A app manda lotes de 150 tickets (~6,5k tokens de entrada, máx. 6.729 em agosto):
   # o modelo daqui precisa de contexto >= 8.000 tokens.
+  # Um lote grande leva ~9,8 s no large (sem streaming, chega tudo no fim): timeout 15 s
+  # dá folga de ~50% e mantém o pior caso de um lote (15 + 15 + 15 s) abaixo de 60 s.
   - model_name: topics
     litellm_params:
       model: anthropic/claude-fake-large
@@ -41,8 +114,28 @@ model_list:
       api_key: os.environ/FAKE_ANTHROPIC_KEY
       input_cost_per_token: 0.000003
       output_cost_per_token: 0.000015
+      timeout: 15
+  - model_name: topics-fallback
+    litellm_params:
+      model: openai/gpt-fake-large
+      api_base: http://provider-fake:8090/openai/v1
+      api_key: os.environ/FAKE_OPENAI_KEY
+      input_cost_per_token: 0.0000025
+      output_cost_per_token: 0.00001
+      timeout: 15
+  # Modelo fraco ACEITO: mesmos tópicos, contagens e exemplos que o large nos lotes
+  # comparados, e ninguém espera o relatório em tempo real.
+  - model_name: topics-weak
+    litellm_params:
+      model: anthropic/claude-fake-mini
+      api_base: http://provider-fake:8090/anthropic
+      api_key: os.environ/FAKE_ANTHROPIC_KEY
+      input_cost_per_token: 0.0000008
+      output_cost_per_token: 0.000004
+      timeout: 15
 
   # ---- extract (F4, extração de pedido) ------------------------------------
+  # Saída curta, como a classify: timeout 4 s.
   - model_name: extract
     litellm_params:
       model: openai/gpt-fake-large
@@ -50,9 +143,92 @@ model_list:
       api_key: os.environ/FAKE_OPENAI_KEY
       input_cost_per_token: 0.0000025
       output_cost_per_token: 0.00001
+      timeout: 4
+  - model_name: extract-fallback
+    litellm_params:
+      model: anthropic/claude-fake-large
+      api_base: http://provider-fake:8090/anthropic
+      api_key: os.environ/FAKE_ANTHROPIC_KEY
+      input_cost_per_token: 0.000003
+      output_cost_per_token: 0.000015
+      timeout: 4
+  # SEM modelo fraco (não existe extract-weak), de propósito: o mini devolve o número da
+  # nota fiscal como número do pedido em 717 dos 5.000 tickets, e a extração alimenta uma
+  # automação sem revisão humana (troca/devolução do pedido errado). Se os dois large
+  # falharem, o certo é um erro explícito, e não um dado errado com cara de certo.
 
-# Resiliência (timeouts, retry_policy, fallbacks técnico e com modelo fraco) entra
-# nas fases seguintes, aqui e em router_settings. Por ora: sem fallback.
+router_settings:
+  # Retry só por tipo de erro, e nunca pelo número global. Cada salto de fallback volta a
+  # aplicar a política do grupo de destino (model_group_retry_policy[grupo], senão
+  # retry_policy). Quando uma política se aplica, o LiteLLM pula a própria checagem de
+  # "vale repetir?", por isso TODOS os tipos estão explícitos (um tipo omitido cairia no
+  # DefaultRetries).
+  num_retries: 0
+  retry_policy:
+    # Transitórios (500, 503, 429): 1 retentativa no mesmo deployment, com backoff
+    # (0,5 s x 2^n + até 0,75 s de jitter; em 429 respeita o Retry-After do provider).
+    # Uma só, porque logo atrás há um fallback em outro provider: insistir mais no mesmo
+    # só atrasa a resposta.
+    InternalServerErrorRetries: 1
+    ServiceUnavailableErrorRetries: 1
+    RateLimitErrorRetries: 1
+    # Timeout: 0. Um provider que não respondeu em N s dificilmente responde na segunda
+    # vez, e repetir dobraria o pior caso (ex.: classify 4 s -> 8 s só no primário). Vai
+    # direto para o fallback.
+    TimeoutErrorRetries: 0
+    # Erros do pedido (400, 401, conteúdo): repetir dá o mesmo resultado.
+    BadRequestErrorRetries: 0
+    AuthenticationErrorRetries: 0
+    ContentPolicyViolationErrorRetries: 0
+    # Qualquer outro tipo (ex.: falha de conexão): direto para o fallback.
+    DefaultRetries: 0
+  # Modelo fraco é a última opção: uma tentativa só, para o pior caso caber no prazo da app.
+  model_group_retry_policy:
+    classify-weak:
+      InternalServerErrorRetries: 0
+      ServiceUnavailableErrorRetries: 0
+      RateLimitErrorRetries: 0
+      TimeoutErrorRetries: 0
+      BadRequestErrorRetries: 0
+      AuthenticationErrorRetries: 0
+      ContentPolicyViolationErrorRetries: 0
+      DefaultRetries: 0
+    suggest-weak:
+      InternalServerErrorRetries: 0
+      ServiceUnavailableErrorRetries: 0
+      RateLimitErrorRetries: 0
+      TimeoutErrorRetries: 0
+      BadRequestErrorRetries: 0
+      AuthenticationErrorRetries: 0
+      ContentPolicyViolationErrorRetries: 0
+      DefaultRetries: 0
+    topics-weak:
+      InternalServerErrorRetries: 0
+      ServiceUnavailableErrorRetries: 0
+      RateLimitErrorRetries: 0
+      TimeoutErrorRetries: 0
+      BadRequestErrorRetries: 0
+      AuthenticationErrorRetries: 0
+      ContentPolicyViolationErrorRetries: 0
+      DefaultRetries: 0
+  # Ordem: primeiro o large do outro provider (mesma saída), depois o fraco, se aceito.
+  # extract não tem fraco (ver acima).
+  # suggest-fallback -> suggest-weak: necessário só por causa do streaming. Se o stream do
+  # fallback técnico falha ANTES do 1º conteúdo (ex.: provider lento, sem trecho em 5 s),
+  # o LiteLLM procura a cadeia pelo nome do grupo que falhou (suggest-fallback), e não
+  # pelo de origem; sem esta linha o suggest-weak nunca é tentado (observado: 500 sem
+  # chamada ao mini). Sem streaming não muda nada: o fraco não é chamado duas vezes,
+  # porque o LiteLLM não repete um destino já tentado na mesma requisição.
+  fallbacks:
+    - classify: [classify-fallback, classify-weak]
+    - suggest: [suggest-fallback, suggest-weak]
+    - suggest-fallback: [suggest-weak]
+    - topics: [topics-fallback, topics-weak]
+    - extract: [extract-fallback]
+  # Sem cooldown: com um deployment por grupo, tirar o deployment de circulação depois de
+  # falhas faria a requisição seguinte pular o primário sem tentar, e a contagem de
+  # tentativas deixaria de ser previsível. Quem decide é a política acima, a cada pedido.
+  disable_cooldowns: true
 
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY

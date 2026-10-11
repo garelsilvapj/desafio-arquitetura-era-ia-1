@@ -57,6 +57,9 @@ services:
       DATABASE_URL: postgresql://litellm:${GATEWAY_DB_PASSWORD}@gateway-db:5432/litellm
       LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:?defina no .env (cp .env.example .env)}
       GATEWAY_APP_KEY: ${GATEWAY_APP_KEY:?defina no .env (cp .env.example .env)}
+      # Chaves das demonstrações de governança (scripts/governance-demo.sh); a app não as recebe.
+      GATEWAY_DEMO_BUDGET_KEY: ${GATEWAY_DEMO_BUDGET_KEY:?defina no .env (cp .env.example .env)}
+      GATEWAY_DEMO_RPM_KEY: ${GATEWAY_DEMO_RPM_KEY:?defina no .env (cp .env.example .env)}
       FAKE_OPENAI_KEY: ${FAKE_OPENAI_KEY}
       FAKE_ANTHROPIC_KEY: ${FAKE_ANTHROPIC_KEY}
       # Offline: sem o 1º, o LiteLLM busca no GitHub o mapa de custos ao subir (3 tentativas);
