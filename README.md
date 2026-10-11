@@ -81,9 +81,10 @@ curl -s "localhost:8090/admin/calls?last=3"
 # (i) Anthropic caída
 curl -s -X POST localhost:8090/admin/reset
 curl -s -X POST localhost:8090/admin/failures -H 'Content-Type: application/json' -d '{"provider":"anthropic","mode":"error_500"}'
-for r in "tickets/classification $T1" "tickets/extraction $T2" "tickets/reply-suggestion $T1"; do
-  set -- $r; curl -s -o /dev/null -w "$1 status=%{http_code} total=%{time_total}\n" -X POST localhost:8000/$1 -H 'Content-Type: application/json' -d "$2"
-done
+call() { curl -s -o /dev/null -w "$1 status=%{http_code} total=%{time_total}\n" -X POST "localhost:8000/$1" -H 'Content-Type: application/json' -d "$2"; }
+call tickets/classification "$T1"
+call tickets/extraction "$T2"
+call tickets/reply-suggestion "$T1"
 curl -s -o /dev/null -w 'reports/topics status=%{http_code} total=%{time_total}\n' -X POST localhost:8000/reports/topics -H 'Content-Type: application/json' -d '{"start":"2026-08-01","end":"2026-08-31"}'
 curl -s "localhost:8090/admin/calls?last=30"
 
@@ -333,8 +334,8 @@ Quando **nenhum large** está disponível (os dois large em `error_500`):
 
 | Feature | O que acontece | Status | Observado pela borda |
 |---|---|---|---|
-| F1 classificação | a classificação sai pelo `gpt-fake-mini`, igual à do large | `200` | `200` em 4,75–5,10 s; `/admin/calls`: `gpt-fake-large` 500 ×2, `claude-fake-large` 500 ×2, `gpt-fake-mini` 200 |
-| F2 sugestão | a sugestão sai pelo `claude-fake-mini`, mais curta (~1.070 caracteres, contra ~2.430) | `200`, SSE até o `event: end` | 1º trecho aos 4,90 s; 267 trechos; fim aos 6,83 s |
+| F1 classificação | a classificação sai pelo `gpt-fake-mini`, igual à do large | `200` | `200` em ~4,3–5,1 s; `/admin/calls`: `gpt-fake-large` 500 ×2, `claude-fake-large` 500 ×2, `gpt-fake-mini` 200 |
+| F2 sugestão | a sugestão sai pelo `claude-fake-mini`, mais curta (TK-00042: ~1.070 caracteres, contra ~2.430) | `200`, SSE até o `event: end` | (TK-00042) 1º trecho aos 4,90 s; 267 trechos; fim aos 6,83 s |
 | F3 relatório | o job termina (`done`) pelo `claude-fake-mini`, com os mesmos tópicos | `202` → `303` → `200` | relatório de um dia pronto aos 7,08 s |
 | F4 extração | erro explícito, sem chamar o mini | `503` com `Retry-After: 10` | `503` em 4,74 s; `gpt-fake-large` 500 ×2, `claude-fake-large` 500 ×2, nenhum mini |
 
@@ -565,15 +566,19 @@ O gateway recusa por orçamento e por limite de requisições, antes de chamar o
 ./scripts/governance-demo.sh
 ```
 
-Saída observada (6,4 s):
+Saída observada:
 
 ```text
+== Pré-checagem
+   gateway e provider no ar
+
 == 1. Orçamento: chave demo-budget
-   gasto zerado (antes: US$ 0.0001575; teto: US$ 0.000005)
+   gasto zerado (antes: US$ 0.0000000; teto: US$ 0.000005)
    chamada 1
     -> 200 {"category": "delivery", "priority": "high"}  custo US$ 0.0001575
    chamada 2
     -> 429 budget_exceeded: Budget has been exceeded! Key=demo-budget (sk-...0001) Current cost: 0.00015750000000000152, Max budget: 5e-06
+    provider: 2026-10-11T22:49:34.759+00:00 openai/gpt-fake-large task=classify status=200
    chamadas novas no provider: 1
 
 == 2. Limite de taxa: chave demo-rpm (2 por minuto)
@@ -582,7 +587,9 @@ Saída observada (6,4 s):
    chamada 2
     -> 200 {"category": "delivery", "priority": "high"}  custo US$ 0.0001575
    chamada 3
-    -> 429 throttling_error: Rate limit exceeded for api_key: ca2cb264…8b13. Limit type: requests. Current limit: 2, Remaining: 0. Limit resets at: 2026-10-11 21:50:00 UTC
+    -> 429 throttling_error: Rate limit exceeded for api_key: ca2cb264dc8baa348f888a350f002f8481c4d880a5361ad4ecef728cb8f28b13. Limit type: requests. Current limit: 2, Remaining: 0. Limit resets at: 2026-10-11 22:50:39 UTC
+    provider: 2026-10-11T22:49:37.244+00:00 openai/gpt-fake-large task=classify status=200
+    provider: 2026-10-11T22:49:38.355+00:00 openai/gpt-fake-large task=classify status=200
    chamadas novas no provider: 2
 
 == Resumo
@@ -619,7 +626,7 @@ calls                                                           # 3  (+2)
 
 - A recusa por orçamento sai como `429` com `"type": "budget_exceeded"`. Para ver o corpo, rode a chamada sem `-o /dev/null`.
 - A recusa por limite sai como `429` com `"type": "throttling_error"` e o horário em que a janela vira (`Limit resets at`).
-- **A janela do rpm é fixa: 60 s a partir da 1ª requisição.** Repetir logo depois encontra a janela aberta, e a 1ª chamada já sai `429`. O script detecta isso e espera a janela fechar (até ~60 s; a 2ª execução seguida levou 64 s). Os curls acima precisam de 60 s de intervalo entre execuções.
+- **A janela do rpm é fixa: 60 s a partir da 1ª requisição.** Repetir logo depois encontra a janela aberta, e a 1ª chamada já sai `429`. O script detecta isso e espera a janela fechar: a janela de rpm é fixa de 60 s; uma segunda execução logo em seguida espera a janela virar (observado entre ~58 s e ~67 s). Os curls acima precisam de 60 s de intervalo entre execuções.
 
 ## Mapa de decisões
 

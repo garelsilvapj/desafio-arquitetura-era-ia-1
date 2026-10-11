@@ -54,13 +54,13 @@ Opção 4. A cadeia é sempre **primário → large equivalente no outro provide
 
 - **Consumidor:** o cliente que abriu o ticket e espera a confirmação (modo síncrono, [ADR 0004](0004-modo-de-execucao-por-feature.md)), e a fila de atendimento, roteada por categoria e prioridade.
 - **O que piora:** nada observado. O mini classificou igual nos 5.000 tickets, e mais rápido.
-- **Sem nenhum large:** `200` com a mesma classificação, e `/admin/calls` mostra `gpt-fake-mini`. Com os dois large em `error_500`, a F1 pela borda respondeu `200` em 4,61 s, `{"category": "delivery", "priority": "high"}`, depois de 2 + 2 + 1 chamadas (4,75 s na `main`). Com os dois em `timeout`, respondeu em 8,43 s (1 + 1 + 1).
+- **Sem nenhum large:** `200` com a mesma classificação, e `/admin/calls` mostra `gpt-fake-mini`. Com os dois large em `error_500`, a F1 pela borda respondeu `200` em 4,61 s, `{"category": "delivery", "priority": "high"}`, depois de 2 + 2 + 1 chamadas (entre ~4,3 s e 5,1 s em outras execuções pela borda). Com os dois em `timeout`, respondeu em 8,43 s (1 + 1 + 1).
 
 ### F2 sugestão: aceita o mini
 
 - **Consumidor:** o atendente, que lê, edita e só então envia. A sugestão é um rascunho.
 - **O que piora:** o texto fica mais curto (~1.070 contra ~2.430 caracteres), com a mesma abertura e o mesmo assunto. Uma sugestão mais curta e no assunto é melhor que uma tela vazia.
-- **Sem nenhum large:** o stream termina pelo mini (`200`, SSE). Com os dois large em `error_500`, o gateway abriu o stream e entregou o 1º trecho aos 4,96 s: 269 linhas `data:`, 1.066 caracteres e `[DONE]`, depois de 2 + 2 + 1 chamadas, a última em `claude-fake-mini`. Pela borda, na `main`: 1º trecho aos 4,90 s, 267 trechos (1.066 caracteres) e `event: end` aos 6,83 s.
+- **Sem nenhum large:** o stream termina pelo mini (`200`, SSE). Com os dois large em `error_500`, o gateway abriu o stream e entregou o 1º trecho aos 4,96 s: 269 linhas `data:`, 1.066 caracteres e `[DONE]`, depois de 2 + 2 + 1 chamadas, a última em `claude-fake-mini`. Pela borda, na `main` (TK-00042): 1º trecho aos 4,90 s, 267 trechos (1.066 caracteres) e `event: end` aos 6,83 s.
 - **Limites do streaming:**
   - O fallback só acontece antes do primeiro trecho. Erro depois de conteúdo enviado não é recuperado: com `midstream_error`, houve 1 chamada, 604 caracteres e a linha de erro, sem `[DONE]`. Pela borda, o atendente recebe os 151 trechos e depois `event: error` com `{"ticket_id": "TK-00042", "message": "A geração foi interrompida"}` ([ADR 0004](0004-modo-de-execucao-por-feature.md)).
   - O grupo `suggest-fallback` tem cadeia própria (`suggest-fallback: [suggest-weak]`). Quando o stream do fallback técnico falha antes do 1º trecho, o LiteLLM procura a cadeia pelo grupo que falhou, não pelo de origem. Sem essa linha, com os dois providers em `slow`, saiu `500` sem chamada ao mini.

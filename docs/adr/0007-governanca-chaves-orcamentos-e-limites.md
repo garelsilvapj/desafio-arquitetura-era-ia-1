@@ -59,7 +59,7 @@ Regras que valem para todas as chaves:
   Nos dois casos, `/admin/calls` não cresce. A app não repete o `429` (`max_retries=0`, [ADR 0009](0009-portas-e-adaptadores-na-aplicacao.md)).
 - **Preço declarado em todo deployment** (`input_cost_per_token`/`output_cost_per_token`, em decimal). Sem preço, o gasto fica em zero e o orçamento nunca estoura.
 - **O gasto persiste** no `gateway-db` e sobrevive a `restart`, `down` e `up`. O roteiro zera o gasto da `demo-budget` no início (`POST /key/<sha256 da chave>/reset_spend`) para poder ser repetido.
-- **A janela de rpm é fixa**, de 60 s a partir da 1ª requisição. Uma segunda execução logo depois encontra a janela aberta, e o roteiro espera ela fechar (~58 s).
+- **A janela de rpm é fixa**, de 60 s a partir da 1ª requisição. Uma segunda execução logo depois encontra a janela aberta, e o roteiro espera ela fechar: a janela de rpm é fixa de 60 s; uma segunda execução logo em seguida espera a janela virar (observado entre ~58 s e ~67 s).
 
 ## Consequências
 
