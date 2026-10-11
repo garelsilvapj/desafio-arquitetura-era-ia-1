@@ -102,7 +102,7 @@ curl -s "localhost:4000/key/list?key_alias=helpdesk-app&return_full_object=true"
 k = json.load(sys.stdin)["keys"][0]; print({f: k[f] for f in ("key_alias", "spend", "max_budget", "budget_duration")})'
 ```
 
-A recusa com `429` antes do provider, quando o orçamento acaba, é verificada com a chave de demonstração `demo-budget` (orçamento de US$ 0,0001, em `gateway/provision_keys.py`), na evidência do ADR 0007.
+A recusa com `429` antes do provider, quando o orçamento acaba, é verificada com a chave de demonstração `demo-budget` (orçamento de US$ 0,000005, em `gateway/provision_keys.py`), na evidência do [ADR 0007](0007-governanca-chaves-orcamentos-e-limites.md).
 
 Conta do teto, a partir da raiz do repositório. Os tokens seguem a regra do provider-fake (`ceil(caracteres / 4)`) e as saídas vêm do seu gerador determinístico. A conta reproduz os 222.114 / 12.162 tokens do relatório mensal medidos no diagnóstico.
 
