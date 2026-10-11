@@ -1,4 +1,5 @@
 from datetime import date
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -41,3 +42,14 @@ class TopicsReport(BaseModel):
     end: date
     total_tickets: int
     topics: list[Topic]
+
+
+class JobStatus(BaseModel):
+    """Estado de um job do relatório de tópicos (corpo do 202 e de /reports/topics/status/<id>)."""
+
+    job_id: str
+    state: Literal["pending", "running", "done", "failed"]
+    # "<tickets dos lotes já concluídos>/<tickets do período>"
+    progress: str
+    # Só quando `failed`: motivo legível.
+    reason: str | None = None

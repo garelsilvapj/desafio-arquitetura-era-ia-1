@@ -34,6 +34,14 @@ Fixam o comportamento externo da v1 pela borda (corpos completos, não só statu
 - Duração: cerca de 1 minuto (as sugestões levam ~16 s cada).
 - Requer `python3` >= 3.11 no host; o script cria `.venv/` e instala `tests/requirements.txt` sozinho. Argumentos extras vão para o pytest (`./tests/run.sh characterization -k health`).
 
+### Testes de aceitação
+
+```bash
+./tests/run.sh acceptance
+```
+
+Conferem os critérios de aceitação do desafio pela borda, provocando falhas no provider-fake (`POST /admin/failures`) e contando as tentativas em `GET /admin/calls`: tempos da F1 e do 1º trecho da F2, evento de erro no meio do stream, relatório do mês assíncrono (202 → estado → 303 → resultado), fallback por capacidade, modelo fraco só onde é aceito, 503 explícito na extração, job `failed` em menos de 60 s e nenhum 504. Zeram o provider antes e depois de cada teste. Mesmas variáveis e requisitos da caracterização; duração de ~3 min (o relatório do mês leva ~90 s).
+
 ### Métrica de acoplamento
 
 ```bash

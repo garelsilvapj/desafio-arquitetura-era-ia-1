@@ -68,10 +68,12 @@ model_list:
 
   # ---- suggest (F2, sugestão de resposta) ----------------------------------
   # Saída longa (~600 tokens): ~16 s no large sem streaming, primeiro trecho em ~0,8 s.
-  # stream_timeout 5 s: com streaming, nenhum trecho pode demorar mais que isso.
-  # timeout 20 s (sem streaming): a F2 ainda é síncrona nesta versão e a resposta inteira
-  # leva ~16 s; com 5 s ela falharia sempre. Quando a F2 passar a streaming, a app usa o
-  # stream_timeout e este valor só vale para chamadas sem streaming.
+  # stream_timeout 5 s: a app (F2) sempre chama com streaming, e aí é o único que vale
+  # (o LiteLLM escolhe stream_timeout quando stream=true): nenhuma espera pelo 1º trecho
+  # ou entre trechos passa de 5 s, e o pior caso até o 1º trecho fica em 15 s (5 + 5 + 5).
+  # timeout 20 s: só vale para chamada SEM streaming, que a app não faz mais. Fica em 20 s
+  # (e não 5) porque sem streaming a resposta inteira leva ~16 s no large: com 5 s toda
+  # chamada sem streaming estouraria no primário e no técnico e cairia em silêncio no fraco.
   - model_name: suggest
     litellm_params:
       model: anthropic/claude-fake-large
