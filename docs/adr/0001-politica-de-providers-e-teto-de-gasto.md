@@ -42,9 +42,9 @@ Opções 3, 5 e 8. A política tem três regras.
 
 **(a) Toda feature de IA consome modelo só pelo gateway corporativo self-hosted** ([ADR 0002](0002-ai-gateway-self-hosted.md)), com nomes lógicos de capacidade e uma chave virtual própria. Credenciais de provider pertencem à plataforma e ficam só no gateway: nenhuma aplicação as recebe.
 
-**(b) Toda capacidade tem modelo equivalente em pelo menos dois providers contratados**, e o gateway troca de um para o outro (ADR 0003 e ADR 0005). Só se contrata provider alcançável a partir do gateway self-hosted.
+**(b) Toda capacidade tem modelo equivalente em pelo menos dois providers contratados**, e o gateway troca de um para o outro ([ADR 0003](0003-capacidades-logicas-e-mapeamento.md) e [ADR 0005](0005-politica-de-fallback.md)). Só se contrata provider alcançável a partir do gateway self-hosted.
 
-**(c) O teto de gasto de IA do helpdesk é US$ 80,00 a cada 30 dias.** É aplicado como orçamento da chave virtual `helpdesk-app` (`max_budget` 80, `budget_duration` 30d; ADR 0007). A conta usa os preços declarados e os 5.000 tickets de agosto: cada ticket passa uma vez por F1, F2 e F4, e o relatório do mês inteiro roda 4 vezes por mês (margem para reemissões).
+**(c) O teto de gasto de IA do helpdesk é US$ 80,00 a cada 30 dias.** É aplicado como orçamento da chave virtual `helpdesk-app` (`max_budget` 80, `budget_duration` 30d; [ADR 0007](0007-governanca-chaves-orcamentos-e-limites.md)). A conta usa os preços declarados e os 5.000 tickets de agosto: cada ticket passa uma vez por F1, F2 e F4, e o relatório do mês inteiro roda 4 vezes por mês (margem para reemissões).
 
 | Item | Chamadas/mês | Tokens de entrada / saída | US$ |
 |---|---|---|---|
@@ -72,7 +72,7 @@ O fallback entre os large quase não mexe na conta: F1 e F4 inteiras no `claude-
 ## Consequências
 
 - **Melhor:**
-  - Uma queda de provider deixa de ser uma queda do helpdesk, desde que o fallback do ADR 0005 esteja configurado.
+  - Uma queda de provider deixa de ser uma queda do helpdesk, desde que o fallback do [ADR 0005](0005-politica-de-fallback.md) esteja configurado.
   - Nenhuma aplicação guarda chave de provider: na v2, o `app` só recebe `GATEWAY_BASE_URL` e `GATEWAY_API_KEY`.
   - O gasto fica visível por chave (`spend`) e por capacidade (`/spend/logs`) antes da fatura.
 - **Pior / custo:**
@@ -81,7 +81,7 @@ O fallback entre os large quase não mexe na conta: F1 e F4 inteiras no `claude-
   - Um pico legítimo pode desligar as features de IA no meio do mês. Subir o teto é decisão corporativa (finanças + produto), não do operador de plantão.
 - **Passa a ser necessário:**
   - Declarar no gateway o preço de todo modelo físico e atualizá-lo quando o contrato mudar. Sem preço, o LiteLLM calcula custo zero e o teto nunca estoura (`provider-fake/README.md`).
-  - Acompanhar o `spend` da chave antes que ele chegue ao teto (ADR 0007).
+  - Acompanhar o `spend` da chave antes que ele chegue ao teto ([ADR 0007](0007-governanca-chaves-orcamentos-e-limites.md)).
 - **Vigiar:**
   - O teto é conferido antes de cada chamada, então as que já estão em andamento quando ele é cruzado terminam. O estouro fica na ordem dessas chamadas: um lote de `topics` custa ~US$ 0,025 e uma sugestão ~US$ 0,009.
   - `docker compose down -v` zera o gasto acumulado ([ADR 0008](0008-banco-do-gateway.md)), e a rotação do valor da chave também: a chave nova começa do zero.

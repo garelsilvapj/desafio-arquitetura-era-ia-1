@@ -26,8 +26,9 @@ topics_jobs = JobRegistry(keep=config.TOPICS_JOBS_KEPT)
 
 # Intervalo sugerido entre consultas ao estado de um relatório.
 POLL_SECONDS = "5"
-# A borda (nginx) acumula a resposta do upstream por padrão; sem X-Accel-Buffering: no,
-# os trechos só chegariam ao cliente em blocos.
+# A borda (nginx) roda com proxy_buffering on; X-Accel-Buffering: no desliga esse buffer
+# para esta resposta. Medido com a config atual, os trechos chegam evento a evento com ou
+# sem o header; ele fica como defesa barata (ver ADR 0004, "Achado sobre a borda").
 SSE_HEADERS = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
 
 app = FastAPI(title="Helpdesk")

@@ -6,7 +6,7 @@
 
 ## Contexto
 
-O desafio exige governança no gateway: chaves com orçamento e com limite de requisições. O teto corporativo de US$ 80 a cada 30 dias ([ADR 0001](0001-politica-de-providers-e-teto-de-gasto.md)) é o orçamento da chave `helpdesk-app` (ADR 0007). No LiteLLM Proxy v1.102.1 ([ADR 0002](0002-ai-gateway-self-hosted.md)), chave virtual, orçamento, limite e gasto acumulado só existem com banco:
+O desafio exige governança no gateway: chaves com orçamento e com limite de requisições. O teto corporativo de US$ 80 a cada 30 dias ([ADR 0001](0001-politica-de-providers-e-teto-de-gasto.md)) é o orçamento da chave `helpdesk-app` ([ADR 0007](0007-governanca-chaves-orcamentos-e-limites.md)). No LiteLLM Proxy v1.102.1 ([ADR 0002](0002-ai-gateway-self-hosted.md)), chave virtual, orçamento, limite e gasto acumulado só existem com banco:
 
 - sem `DATABASE_URL`, `/key/generate` responde 500 com `DB not connected. This endpoint needs a database; set DATABASE_URL to a PostgreSQL connection string (postgresql://...)` (`CommonProxyErrors.db_not_connected_error` em `litellm/proxy/_types.py`, levantado em `key_management_endpoints.py`);
 - o esquema é Prisma com `provider = "postgresql"` (`litellm/proxy/schema.prisma`): não há SQLite nem outro banco;
@@ -49,7 +49,7 @@ Um `gateway-init` seria mais um serviço, com a imagem de 1,19 GB, e mais uma de
 ## Consequências
 
 - **Melhor:**
-  - Orçamento, limite e lista de modelos por chave ficam possíveis (ADR 0007).
+  - Orçamento, limite e lista de modelos por chave ficam possíveis ([ADR 0007](0007-governanca-chaves-orcamentos-e-limites.md)).
   - O gasto fica registrado por chamada (`/spend/logs`, com `model_group`, modelo físico e custo) e acumulado por chave (`spend`).
   - Ambiente novo sobe sem passo manual: `cp .env.example .env && docker compose up -d --build --wait`.
 - **Pior / custo:**

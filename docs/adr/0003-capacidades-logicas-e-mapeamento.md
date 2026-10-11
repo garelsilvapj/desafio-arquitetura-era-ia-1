@@ -36,18 +36,18 @@ Opção 4. A app conhece quatro nomes, um por feature, declarados como constante
 | Capacidade (feature) | Primário (`<cap>`) | Fallback técnico (`<cap>-fallback`) | Modelo fraco (`<cap>-weak`) | Timeout ([ADR 0006](0006-resiliencia-timeout-retry-e-backoff.md)) |
 |---|---|---|---|---|
 | `classify` (F1) | `openai/gpt-fake-large` | `anthropic/claude-fake-large` | `openai/gpt-fake-mini` | 4 s |
-| `suggest` (F2) | `anthropic/claude-fake-large` | `openai/gpt-fake-large` | `anthropic/claude-fake-mini` | 20 s; 5 s por trecho |
+| `suggest` (F2) | `anthropic/claude-fake-large` | `openai/gpt-fake-large` | `anthropic/claude-fake-mini` | 5 s por espera com streaming (`stream_timeout`: 1º trecho e entre trechos); 20 s sem streaming |
 | `topics` (F3) | `anthropic/claude-fake-large` | `openai/gpt-fake-large` | `anthropic/claude-fake-mini` | 15 s |
 | `extract` (F4) | `openai/gpt-fake-large` | `anthropic/claude-fake-large` | nenhum (não existe `extract-weak`) | 4 s |
 
 - **Os grupos internos não são chamáveis pela app.** A chave `helpdesk-app` só tem os quatro nomes na lista de modelos ([ADR 0007](0007-governanca-chaves-orcamentos-e-limites.md)). Chamar `classify-weak` direto com ela dá `403 key_model_access_denied`. O fallback interno do gateway os usa mesmo assim, porque `enforce_fallback_model_access` vem desligado.
-- **Cada deployment está escrito por extenso**, sem âncoras nem merge do YAML, para que trocar um modelo seja uma edição local, sem efeito em outro grupo. Cada deployment declara o próprio preço (ADR 0007).
+- **Cada deployment está escrito por extenso**, sem âncoras nem merge do YAML, para que trocar um modelo seja uma edição local, sem efeito em outro grupo. Cada deployment declara o próprio preço ([ADR 0007](0007-governanca-chaves-orcamentos-e-limites.md)).
 
 **Por que o large é o primário nas quatro.** A v2 é uma refatoração sem mudança de comportamento: os primários repetem o mapeamento da v1 (F1 e F4 no `gpt-fake-large`, F2 e F3 no `claude-fake-large`), e a suíte de caracterização passa inalterada. A conta do teto do [ADR 0001](0001-politica-de-providers-e-teto-de-gasto.md) também parte dos large. Manter a divisão da v1 entre os providers não muda a resposta, porque os large são equivalentes, e reparte a carga dos primários entre os dois providers.
 
 **Considerada e não adotada agora: o mini como primário de `classify` e `topics`.** A saída foi idêntica (5.000/5.000 classificações; 3/3 lotes de tópicos, com a mesma contagem de tokens), e o mini é mais rápido e mais barato:
 
-| Capacidade | Latência large → mini | Custo por chamada large → mini (`x-litellm-response-cost`) | No mês (tokens do ADR 0001) |
+| Capacidade | Latência large → mini | Custo por chamada large → mini (`x-litellm-response-cost`) | No mês (tokens do [ADR 0001](0001-politica-de-providers-e-teto-de-gasto.md)) |
 |---|---|---|---|
 | `classify` | ~1,1 s → ~0,4 s | US$ 0,0001575 → 0,00000945 (16,7× menos) | US$ 1,18 → 0,07 |
 | `topics` | ~9,8 s → ~2,7 s por lote | US$ 0,0238 → 0,0063 por lote de 137 tickets (3,75× menos) | US$ 3,40 → 0,91 (4 relatórios) |
@@ -56,7 +56,7 @@ A economia é de US$ 3,59 por mês (US$ 51,97 → 48,38, ~7%), pequena porque a 
 
 - a v2 não muda comportamento;
 - a equivalência foi observada no provider simulado e, em `topics`, em só 3 lotes;
-- a qualidade aceitável é decisão do dono do produto (ADR 0005), não da plataforma.
+- a qualidade aceitável é decisão do dono do produto ([ADR 0005](0005-politica-de-fallback.md)), não da plataforma.
 
 Adotar é só configuração: é a troca descrita abaixo, já executada com `classify → gpt-fake-mini`. Ao adotar, a cadeia precisa ser revista (o large passa a fallback).
 
@@ -74,7 +74,7 @@ Adotar é só configuração: é a troca descrita abaixo, já executada com `cla
   - Timeout, cadeia de fallback e política de modelo fraco são escolhidos por feature, sem afetar as outras.
 - **Pior / custo:**
   - São 11 deployments para manter, com preço em cada um, e repetição deliberada no YAML.
-  - Feature nova exige uma capacidade nova: deployments, entrada na chave da app em `gateway/provision_keys.py` e uma decisão de modelo fraco (ADR 0005).
+  - Feature nova exige uma capacidade nova: deployments, entrada na chave da app em `gateway/provision_keys.py` e uma decisão de modelo fraco ([ADR 0005](0005-politica-de-fallback.md)).
   - Nesta instalação de uma réplica, a troca tira o gateway do ar por ~11–12 s. Em produção, com réplicas, ela seria gradual (fora deste repositório).
 - **Passa a ser necessário: proteção contra erro de digitação.** O LiteLLM descarta em silêncio um deployment inválido na subida (`ignore_invalid_deployments`). Com `model: opnai/gpt-fake-mini`:
   - o log mostrou `Error creating deployment ... LLM Provider NOT provided`;

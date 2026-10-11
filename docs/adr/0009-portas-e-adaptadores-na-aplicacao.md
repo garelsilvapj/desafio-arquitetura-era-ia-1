@@ -33,7 +33,7 @@ Opção 3. As peças:
   - `LanguageModel.complete(capability, task, content) -> str` separa o roteamento (a capacidade, que o gateway resolve) do protocolo da tarefa (`TASK: <task>` no prompt).
   - `TicketSource.in_period(start, end) -> list[dict]` é assíncrono porque a rota da F3 roda no event loop (R9).
 - **`adapters/gateway.py`**: `GatewayLanguageModel(LanguageModel)`, o **único** componente que chama o gateway e importa `openai`.
-  - Cria o cliente com `AsyncOpenAI(..., max_retries=0, timeout=...)`: quem repete é o gateway (ADR 0006), e o timeout de 25 s é só rede de segurança abaixo dos 30 s da borda.
+  - Cria o cliente com `AsyncOpenAI(..., max_retries=0, timeout=...)`: quem repete é o gateway ([ADR 0006](0006-resiliencia-timeout-retry-e-backoff.md)), e o timeout do socket é só rede de segurança: 25 s na v2, abaixo dos 30 s da borda; 55 s na `main`, acima do maior prazo de feature, porque quem corta passou a ser o prazo de cada feature ([ADR 0006](0006-resiliencia-timeout-retry-e-backoff.md)).
   - Manda `model=<capacidade>` e sempre `max_tokens`.
   - Nunca envia política (`timeout`/`num_retries` no corpo, headers `x-litellm-*`), que o LiteLLM aplicaria por cima da política do gateway. Os `x-stainless-*` que o SDK envia não são lidos como política nem repassados ao provider (`proxy/litellm_pre_call_utils.py` do LiteLLM).
   - URL, chave, timeout e `max_tokens` chegam pelo construtor: o adapter não importa `config`.
@@ -48,20 +48,20 @@ A herança nominal do port nos adapters e a regra "adapter importado só por `ma
 - **Melhor:**
   - **Feature testável sem rede.** Uma classe falsa de 3 linhas cumpre o `LanguageModel` e exercita as regras: 502 na classificação fora dos valores e no pedido `"123"`, 422 com `start > end`, e 301 tickets viram 3 chamadas `topics` em sequência. Foi assim que se conferiu que a refatoração não mudou essas regras.
   - **Uma troca, um arquivo.** Trocar gateway, SDK ou política de cliente mexe só em `adapters/gateway.py` e no construtor em `main`. Trocar modelo ou provider não mexe em nenhum arquivo da app.
-  - **O port assíncrono prepara a próxima fase.** Streaming na F2 e lotes concorrentes na F3 não mudam a composição. O streaming vai pedir um método novo no port, e a mudança fica em port, adapter e F2.
+  - **O port assíncrono prepara a próxima fase.** Streaming na F2 e lotes concorrentes na F3 não mudam a composição. O streaming vai pedir um método novo no port, e a mudança fica em port, adapter e F2. Confirmado na `main` ([ADR 0004](0004-modo-de-execucao-por-feature.md)): o port ganhou `stream()`, e a mudança ficou em `ports`, `adapters/gateway.py`, `suggestion.py` e na rota SSE de `main`. Os lotes concorrentes da F3 e o registro de jobs (`jobs.py`, importado só por `main`) entraram sem mudar a composição das features.
   - **A métrica melhorou:**
     - zona de dor de {`config`, `llm`, `schemas`} para {`config`, `schemas`};
-    - `ports` com A = 1, D = 0 e Ca = 6;
+    - `ports` com A = 1, D = 0 e Ca = 6 (na `main`, com a exceção do port e `jobs`, A = 0,67, D = 0,33 e Ca = 7, [ADR 0010](0010-leitura-da-metrica-de-acoplamento.md));
     - arestas de feature para concreto volátil: 9 → 0;
     - importadores de `config`: 6 → 1.
 - **Pior / custo:**
   - Uma indireção (port + adapter + composição) para uma única implementação de cada port.
   - O D das features subiu de 0,20–0,25 para 0,33. Isso não é meta (R3).
   - As rotas viraram `async def`: qualquer chamada bloqueante numa feature para o event loop e, com ele, todas as requisições em andamento.
-  - O port ainda não traduz erros: `openai.*Error` atravessa a feature até o FastAPI e vira 500, como na v1 (R5). Quando for preciso um 503 explícito, entra uma exceção do port, dentro do limite da R-d do ADR 0010.
+  - Na v2, o port ainda não traduzia erros: `openai.*Error` atravessava a feature até o FastAPI e virava 500, como na v1 (R5). Na `main`, entrou a exceção do port, `LanguageModelUnavailable`, dentro do limite da R-d do [ADR 0010](0010-leitura-da-metrica-de-acoplamento.md) (1 exceção, 2 `Protocol`s). O adapter converte nela toda falha do gateway (`openai.APIError`), com mensagem limpa e o corpo do gateway só no log, e cada feature decide o que ela vira: `503` com `detail`, `event: error` no stream ou job `failed` ([ADR 0004](0004-modo-de-execucao-por-feature.md)).
 - **Vigiar:**
   - Um segundo importador de adapter o põe na zona de dor (R1).
-  - Toda feature nova segue a R-a e a R-b do ADR 0010.
+  - Toda feature nova segue a R-a e a R-b do [ADR 0010](0010-leitura-da-metrica-de-acoplamento.md).
 
 ## Evidência
 
@@ -78,6 +78,8 @@ grep -rnE "num_retries|x-litellm|extra_headers|extra_body" app/helpdesk # só a 
 git diff --stat v1-coupled -- tests/characterization/ && ./tests/run.sh characterization   # vazio; 20 passed in 51.98s
 ```
 
+Na `main`, os mesmos comandos dão o mesmo resultado, com duas diferenças: as features também importam `asyncio` e `collections.abc` (biblioteca padrão), e o `git diff` da suíte mostra a mudança de contrato da F2 e da F3 ([ADR 0004](0004-modo-de-execucao-por-feature.md)). O grep de `adapters|config` continua achando só `main.py`, que também é o único a importar `jobs`.
+
 Linhas de `metrics/results/v1-coupled.csv` → `metrics/results/v2-decoupled.csv` (componente, Ca, Ce, I, A, D). Na v2, `extraction`, `report` e `suggestion` são iguais a `classification`.
 
 ```text
@@ -90,7 +92,7 @@ classification,1,3,0.75,0.00,0.25   classification,1,2,0.67,0.00,0.33
                                     adapters.tickets_file,1,1,0.50,0.00,0.50
 ```
 
-Features com ports falsos, sem rede, dentro do container `app`:
+Features com ports falsos, sem rede, dentro do container `app` (na tag `v2-decoupled`; na `main`, o `422` passou para `report.select`, e `report.topics` recebe os tickets já selecionados, o callback de progresso e a concorrência, [ADR 0004](0004-modo-de-execucao-por-feature.md). Com essa assinatura e um `stream` no `FakeModel`, o mesmo teste dá as mesmas quatro linhas):
 
 ```bash
 docker compose exec -T app python - <<'EOF'

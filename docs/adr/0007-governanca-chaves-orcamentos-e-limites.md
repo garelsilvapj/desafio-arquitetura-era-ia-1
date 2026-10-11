@@ -17,7 +17,7 @@ Fatos do LiteLLM v1.102.1 ([ADR 0002](0002-ai-gateway-self-hosted.md)) que molda
 ## Opções consideradas
 
 1. **Sem governança**: uma chave sem limites, ou a master key na app. Não há teto nem gasto separado por aplicação, e a app ganharia poder de administração.
-2. **Teto nas contas dos providers.** É compartilhado por todas as aplicações daquela conta e, com dois providers, vira duas metades fixas que não acompanham o fallback (ADR 0001, opção 7).
+2. **Teto nas contas dos providers.** É compartilhado por todas as aplicações daquela conta e, com dois providers, vira duas metades fixas que não acompanham o fallback ([ADR 0001](0001-politica-de-providers-e-teto-de-gasto.md), opção 7).
 3. **Orçamento e limite por chave virtual no gateway**, somando o gasto em todos os providers.
 4. **Orçamento controlado na app.** Rejeitada:
    - a app teria de saber o preço e o modelo físico que respondeu, porque o fallback muda o custo (uma `classify` custa US$ 0,0001575 no large e US$ 0,00000945 no mini), e isso devolveria à app o que o [ADR 0003](0003-capacidades-logicas-e-mapeamento.md) tirou dela;
@@ -30,11 +30,11 @@ Opção 3. As chaves são dados, na lista `KEYS` de `gateway/provision_keys.py`.
 
 | Alias | Capacidades | Orçamento | rpm | Quem usa e por quê |
 |---|---|---|---|---|
-| `helpdesk-app` | `classify`, `suggest`, `topics`, `extract` | US$ 80,00 / `30d` | sem limite | a app (`GATEWAY_API_KEY`); teto do ADR 0001 |
+| `helpdesk-app` | `classify`, `suggest`, `topics`, `extract` | US$ 80,00 / `30d` | sem limite | a app (`GATEWAY_API_KEY`); teto do [ADR 0001](0001-politica-de-providers-e-teto-de-gasto.md) |
 | `demo-budget` | `classify` | US$ 0,000005, sem janela | sem limite | `scripts/governance-demo.sh`: a 2ª chamada estoura o orçamento |
 | `demo-rpm` | `classify` | sem orçamento | 2 por minuto | `scripts/governance-demo.sh`: a 3ª chamada no minuto é recusada |
 
-**Por que `helpdesk-app` não tem rpm baixo.** O relatório mensal manda 34 lotes ao gateway, vários em paralelo ([ADR 0004](0004-modo-de-execucao-por-feature.md)). Um rpm baixo recusaria lotes e derrubaria o relatório. O que limita o gasto é o orçamento; o limite de taxa do provider é tratado com retry e fallback ([ADR 0006](0006-resiliencia-timeout-retry-e-backoff.md)).
+**Por que `helpdesk-app` não tem rpm baixo.** O relatório mensal manda 34 lotes ao gateway, 4 de cada vez, em ~89 s ([ADR 0004](0004-modo-de-execucao-por-feature.md)). Um rpm baixo recusaria lotes e derrubaria o relatório. O que limita o gasto é o orçamento; o limite de taxa do provider é tratado com retry e fallback ([ADR 0006](0006-resiliencia-timeout-retry-e-backoff.md)).
 
 **Por que US$ 0,000005 na `demo-budget`.** O LiteLLM recusa quando o gasto acumulado é maior ou igual ao orçamento. A 1ª chamada sempre passa (gasto 0), e a recusa só pode vir da 2ª. Para recusar exatamente a 2ª, o teto precisa ficar abaixo do custo de **uma** `classify` do roteiro em qualquer modelo que a capacidade possa usar:
 
@@ -64,16 +64,16 @@ Regras que valem para todas as chaves:
 ## Consequências
 
 - **Melhor:**
-  - O teto do ADR 0001 é aplicado sem código na app.
+  - O teto do [ADR 0001](0001-politica-de-providers-e-teto-de-gasto.md) é aplicado sem código na app.
   - O gasto fica visível por chave (`spend`) e por capacidade (`/spend/logs`, com `model_group`).
   - A recusa não chega ao provider e não gasta nada.
   - Chave nova, orçamento ou limite são uma entrada na lista `KEYS`, aplicada no próximo start do gateway.
 - **Pior / custo:**
   - O teto vale por chave. Quem tiver a master key cria chaves sem teto, e a master key precisa da mesma guarda das credenciais de provider.
-  - Rotação do valor da chave e `docker compose down -v` zeram o gasto contado (ADR 0008).
+  - Rotação do valor da chave e `docker compose down -v` zeram o gasto contado ([ADR 0008](0008-banco-do-gateway.md)).
 - **Vigiar:**
   - **Janela do orçamento.** Com `budget_duration: 30d`, o LiteLLM marcou `budget_reset_at` em `2026-11-01T00:00:00Z` para a chave criada em 2026-10-10. A primeira janela acabou no início do mês seguinte, não 30 dias depois. As janelas seguintes não foram observadas.
-  - **Chamadas em andamento.** Como o orçamento é conferido na entrada, as chamadas já em andamento terminam, e o estouro fica na ordem delas (ADR 0001).
+  - **Chamadas em andamento.** Como o orçamento é conferido na entrada, as chamadas já em andamento terminam, e o estouro fica na ordem delas ([ADR 0001](0001-politica-de-providers-e-teto-de-gasto.md)).
   - **Log.** O gateway registra cada recusa como `ERROR` (`auth_exception_handler.py`: `Budget has been exceeded!`; `Rate limit exceeded`). Alerta por contagem de `ERROR` precisa separar recusa de governança de falha.
   - **`spend` da `helpdesk-app`** em relação aos US$ 80: o alerta deve vir antes do estouro, e não com a recusa.
 
